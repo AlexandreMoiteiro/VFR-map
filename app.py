@@ -1,85 +1,77 @@
 import streamlit as st
 import pandas as pd
 import folium
-from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 
-# === SIDEBAR / CONFIG ===
-st.set_page_config(page_title="VFR Points Portugal", layout="wide")
-st.sidebar.title("🔎 Filtros")
-st.title("🗺️ Significant VFR Points in Portugal")
-st.caption("Mapa interativo de pontos de navegação VFR em Portugal, com cluster, pesquisa e visual moderno.")
+# ==== HIDE STREAMLIT DEFAULT STUFF (sidebar, footer, etc) ====
+hide_streamlit_style = """
+    <style>
+        #MainMenu {visibility: hidden;}
+        footer {visibility: hidden;}
+        header {visibility: hidden;}
+        .css-1kyxreq {padding-top: 2rem;}
+        .block-container {padding-top: 2rem;}
+    </style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# === LOAD DATA ===
+# ==== PAGE SETUP ====
+st.set_page_config(page_title="VFR Points Portugal", layout="wide", page_icon="✈️")
+
+# ==== DATA ====
 CSV_PATH = "significant_places.csv"
 df = pd.read_csv(CSV_PATH)
 df["LatDecimal"] = pd.to_numeric(df["LatDecimal"], errors="coerce")
 df["LonDecimal"] = pd.to_numeric(df["LonDecimal"], errors="coerce")
 df = df.dropna(subset=["LatDecimal", "LonDecimal"])
 
-# === FILTERS ===
-search = st.sidebar.text_input("Filtrar por Nome ou Código").strip()
+# ==== TITLE / SEARCH ====
+st.markdown("<h1 style='text-align: center; margin-bottom:0.1em;'>Significant VFR Points Portugal</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #888; margin-bottom:2em;'>Visual reporting points for VFR navigation</p>", unsafe_allow_html=True)
+
+# Barra de pesquisa simples e discreta
+search = st.text_input("", placeholder="Search by name or code...", key="search_input")
 if search:
-    df = df[df['Name'].str.contains(search, case=False) | df['Code'].str.contains(search, case=False)]
+    df = df[df["Name"].str.contains(search, case=False) | df["Code"].str.contains(search, case=False)]
 
-# (Extra) Filtro por prefixo do código
-prefix = st.sidebar.text_input("Começa por código (opcional)").strip().upper()
-if prefix:
-    df = df[df['Code'].str.startswith(prefix)]
+st.markdown(f"<p style='text-align: center; color:#444; font-size:1.1em;'>Total points: <b>{len(df)}</b></p>", unsafe_allow_html=True)
 
-st.sidebar.markdown(f"**{len(df)} pontos visíveis**")
-
-# === DATA TABLE (TOGGLE) ===
-with st.expander("🗂️ Ver tabela de dados"):
-    st.dataframe(df[['Name', 'Code', 'LatDecimal', 'LonDecimal']], use_container_width=True)
-
-# === MAP SETUP ===
-# Mapa escuro bonito, zoom centrado
-map_center = [df["LatDecimal"].mean(), df["LonDecimal"].mean()]
+# ==== FOLIUM MAP ====
 m = folium.Map(
-    location=map_center,
-    zoom_start=6.3,
-    tiles="CartoDB dark_matter"
+    location=[df["LatDecimal"].mean(), df["LonDecimal"].mean()],
+    zoom_start=6,
+    tiles="CartoDB positron",  # Mapa mais clean/minimal
+    control_scale=True,
+    prefer_canvas=True
 )
 
-# CLUSTER (com popups bonitos)
-marker_cluster = MarkerCluster().add_to(m)
+# CLUSTER para ficar clean quando muitos pontos (podes tirar se quiseres tudo visível sempre)
+from folium.plugins import MarkerCluster
+cluster = MarkerCluster(showCoverageOnHover=False, spiderfyOnMaxZoom=True, disableClusteringAtZoom=10).add_to(m)
 
 for _, row in df.iterrows():
-    popup_html = f"""
-        <div style='font-family:Montserrat,Arial;font-size:14px;'>
-            <b>{row['Name']}</b> <br>
-            <b>Code:</b> <span style='color:#f44336;'>{row['Code']}</span><br>
-            <b>Lat:</b> {row['LatDecimal']:.5f}<br>
-            <b>Lon:</b> {row['LonDecimal']:.5f}
-        </div>
-    """
     folium.CircleMarker(
         location=[row["LatDecimal"], row["LonDecimal"]],
-        radius=6,
+        radius=5,
         fill=True,
-        color="#2196F3",  # azul bonito
-        fill_color="#00e0ff",
-        fill_opacity=0.85,
-        popup=folium.Popup(popup_html, max_width=250, min_width=150),
-        tooltip=row['Code'],
-        weight=2
-    ).add_to(marker_cluster)
+        color="#1976d2",  # azul-profissional
+        fill_color="#1976d2",
+        fill_opacity=0.80,
+        weight=0,
+        tooltip=folium.Tooltip(
+            f"<b>{row['Name']}</b><br><span style='color:#1976d2;'>Code: {row['Code']}</span><br>"
+            f"Lat: {row['LatDecimal']:.5f}<br>Lon: {row['LonDecimal']:.5f}",
+            sticky=True,
+            direction='top'
+        ),
+    ).add_to(cluster)
 
-# MAPA RESPONSIVO
-st_data = st_folium(m, use_container_width=True, height=700, returned_objects=[])
+st_folium(m, width=1000, height=650)
 
-st.markdown("""
-<style>
-    /* Melhora tooltips no dark map */
-    .leaflet-popup-content-wrapper, .leaflet-popup-tip {
-        background: #1c2024 !important;
-        color: #f5f5f5 !important;
-        font-family: 'Montserrat', Arial, sans-serif;
-        font-size: 14px;
-    }
-</style>
-""", unsafe_allow_html=True)
+# (Opcional) tabela expansível minimalista
+with st.expander("Show table", expanded=False):
+    st.dataframe(df[["Name", "Code", "LatDecimal", "LonDecimal"]], hide_index=True, use_container_width=True)
+
 
 
 
