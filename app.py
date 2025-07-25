@@ -4,97 +4,70 @@ import folium
 from streamlit_folium import st_folium
 from folium.plugins import MarkerCluster, MiniMap, Fullscreen
 
-st.set_page_config(layout="wide")
+# Layout largo e fundo branco
+st.set_page_config(page_title="VFR Points Portugal", layout="wide")
 
-st.markdown(
-    """
+# CSS para tirar cor infantil, suavizar tudo
+st.markdown("""
     <style>
-    .main {background-color: #f5f6fa;}
-    .folium-map {border-radius: 18px; box-shadow: 0 2px 18px #ccc;}
+        body { background-color: #fff !important; }
+        .stApp { background-color: #fff; }
+        .folium-map { border-radius: 15px; box-shadow: 0 2px 12px #ddd; }
+        .stTextInput > div > div > input {font-size: 1.1em;}
+        .stDataFrame { border-radius: 15px; }
     </style>
-    """,
-    unsafe_allow_html=True,
-)
+    """, unsafe_allow_html=True)
 
-# ===== 1. Lê e prepara dados =====
+# ===== Lê e prepara dados =====
 df = pd.read_csv("significant_places.csv")
 df["LatDecimal"] = pd.to_numeric(df["LatDecimal"], errors="coerce")
 df["LonDecimal"] = pd.to_numeric(df["LonDecimal"], errors="coerce")
 df = df.dropna(subset=["LatDecimal", "LonDecimal"])
 
-# ===== 2. Barra lateral com filtros =====
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/189/189672.png", width=70)
-    st.title("Filtros")
-    search = st.text_input("Nome ou Código VFR")
-    color_by_code = st.checkbox("Colorir por prefixo do código", value=True)
-    st.markdown("---")
-    st.caption("Powered by [Streamlit](https://streamlit.io/) + [Folium](https://python-visualization.github.io/folium/)")
+st.title("Significant VFR Points in Portugal")
+st.caption("Mapa interativo de pontos de referência VFR. Clica em cada ponto para ver o nome e código.")
+
+col1, col2 = st.columns([3, 1])
+with col1:
+    search = st.text_input("Filtrar por nome ou código", "")
+with col2:
+    st.markdown(f"<div style='font-size:18px; margin-top: 18px;'>Total de pontos: <b>{len(df)}</b></div>", unsafe_allow_html=True)
 
 if search:
     df = df[df['Name'].str.contains(search, case=False) | df['Code'].str.contains(search, case=False)]
 
-st.title("🛩️ Significant VFR Points in Portugal")
-st.write(f"**Total de pontos no mapa:** {len(df)}")
-
-# ===== 3. Função para cor personalizada =====
-import random
-
-def code_color(code):
-    # Customiza por prefixo ou random só para exemplo
-    prefix = code[:2]
-    color_dict = {
-        'AB': '#D7263D', 'AL': '#8B5E83', 'BA': '#254441', 'BE': '#0597F2', 
-        'CA': '#9BC53D', 'CO': '#FFA400', 'EV': '#D7263D', 'FA': '#6A0572',
-        'PO': '#3B1F2B', 'SE': '#0A1128', 'VI': '#660708', 'MA': '#007566'
-    }
-    return color_dict.get(prefix, "#{:06x}".format(random.randint(0, 0xFFFFFF)))
-
-# ===== 4. Cria o mapa bonito =====
+# ===== Mapa =====
 m = folium.Map(
     location=[df["LatDecimal"].mean(), df["LonDecimal"].mean()],
     zoom_start=6.3,
     tiles="CartoDB positron"
 )
-
-# Extra: MiniMap, FullScreen
+# Extra: MiniMapa e Fullscreen mas discretos
 MiniMap(toggle_display=True).add_to(m)
 Fullscreen(position='topright').add_to(m)
-
-# Cluster para evitar poluição visual
 marker_cluster = MarkerCluster(name="VFR Points").add_to(m)
 
 for _, row in df.iterrows():
-    if color_by_code:
-        marker_color = code_color(row["Code"])
-    else:
-        marker_color = "red"
     folium.CircleMarker(
         location=[row["LatDecimal"], row["LonDecimal"]],
-        radius=6,
+        radius=5,
         fill=True,
-        color=marker_color,
-        fill_color=marker_color,
-        fill_opacity=0.85,
-        weight=2,
-        tooltip=folium.Tooltip(
-            f"""
-            <b>{row['Name']}</b> <br>
-            <small><b>Code:</b> {row['Code']}</small><br>
-            <b>Lat:</b> {row['LatDecimal']}<br>
-            <b>Lon:</b> {row['LonDecimal']}
-            """, sticky=True
-        ),
-        popup=folium.Popup(f"<b>{row['Name']}</b><br><b>Code:</b> {row['Code']}", max_width=250)
+        color="#2A2A2A",
+        fill_color="#404040",
+        fill_opacity=0.78,
+        weight=1,
+        tooltip=f"<b>{row['Name']}</b> ({row['Code']})",
+        popup=folium.Popup(f"<b>{row['Name']}</b><br>Código: <b>{row['Code']}</b>", max_width=220)
     ).add_to(marker_cluster)
 
 folium.LayerControl().add_to(m)
 
-# ===== 5. Mostra mapa responsivo =====
-st_folium(m, width=1100, height=700, returned_objects=[])
+# ===== Mostra mapa grande =====
+st_folium(m, width=1100, height=680)
 
-# ===== 6. Data Table abaixo =====
+# ===== Data Table discreta =====
 with st.expander("Ver tabela de pontos VFR"):
-    st.dataframe(df[['Name', 'Code', 'LatDecimal', 'LonDecimal']])
+    st.dataframe(df[['Name', 'Code', 'LatDecimal', 'LonDecimal']], use_container_width=True)
+
 
 
