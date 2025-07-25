@@ -1,65 +1,63 @@
 import streamlit as st
 import pandas as pd
-import folium
-from folium.plugins import MarkerCluster
-from streamlit_folium import st_folium
+import pydeck as pdk
 
-st.set_page_config(page_title="Mapa Pontos VFR Portugal", layout="wide")
-st.title("Mapa Interativo de Pontos VFR, Áreas de Treino e Aeródromos (Little Navmap)")
+# Coordenadas de Ponte de Sor
+PONTE_DE_SOR_COORDS = (39.233333, -8.0)
+ZOOM_LEVEL = 8.5  # Zoom recomendado para ver bem Portugal inteiro, mas centrado em Ponte de Sor
 
-CSV_PATH = "LittleNavmap.csv"  # ou "/mnt/data/LittleNavmap.csv"
+# Ler o ficheiro csv (tem de estar na mesma pasta)
+df = pd.read_csv("significant_places.csv")
 
-# ----------- Lê o ficheiro só uma vez ------------
-@st.cache_data
-def carregar_pontos(csv_path):
-    df = pd.read_csv(csv_path, sep=',', encoding='utf-8', header=None)
-    pontos = []
-    for i, row in df.iterrows():
-        ponto = {
-            'tipo': str(row[0]).strip().upper(),   # VRP, etc
-            'nome': str(row[1]).strip(),
-            'codigo': str(row[2]).strip(),
-            'lat': float(row[3]),
-            'lon': float(row[4])
-        }
-        pontos.append(ponto)
-    return pontos
+# Garantir que as colunas decimais existem
+if 'LatDecimal' not in df.columns or 'LonDecimal' not in df.columns:
+    st.error("Ficheiro sem colunas LatDecimal/LonDecimal.")
+    st.stop()
 
-pontos = carregar_pontos(CSV_PATH)
+# Se quiseres mostrar só alguns pontos (ex: área de treino), podes filtrar aqui
+# Exemplo: df = df[df["Tipo"] == "VFR"]
 
-# ----------- Filtro pelo tipo (ex: só VRP) -----------
-tipos_disponiveis = sorted(set(p['tipo'] for p in pontos))
-tipo_selecionado = st.selectbox("Filtrar por tipo de ponto", ["TODOS"] + tipos_disponiveis)
+st.set_page_config(page_title="Mapa de Pontos VFR", layout="wide")
+st.title("Mapa de Pontos VFR em Portugal")
+st.markdown("Todos os pontos do ficheiro `significant_places.csv` apresentados no mapa. Centrado em Ponte de Sor.")
 
-if tipo_selecionado == "TODOS":
-    pontos_a_mostrar = pontos
-else:
-    pontos_a_mostrar = [p for p in pontos if p['tipo'] == tipo_selecionado]
+# Mostrar tabela (opcional)
+with st.expander("Ver tabela dos pontos VFR"):
+    st.dataframe(df[["Name", "Code", "LatDecimal", "LonDecimal"]])
 
-st.write(f"Total de pontos mostrados: {len(pontos_a_mostrar)}")
+# Layer dos marcadores no mapa
+layer = pdk.Layer(
+    "ScatterplotLayer",
+    data=df,
+    get_position=["LonDecimal", "LatDecimal"],
+    get_color=[230, 57, 70, 180],  # cor vermelha semi-transparente
+    get_radius=600,
+    pickable=True
+)
 
-# ----------- Criação do mapa -----------
-# Centrado aproximadamente em Ponte de Sor
-m = folium.Map(location=[39.2117, -8.0579], zoom_start=8, tiles="OpenStreetMap")
-marker_cluster = MarkerCluster().add_to(m)
+# Vista inicial do mapa
+view_state = pdk.ViewState(
+    latitude=PONTE_DE_SOR_COORDS[0],
+    longitude=PONTE_DE_SOR_COORDS[1],
+    zoom=ZOOM_LEVEL,
+    pitch=0
+)
 
-for ponto in pontos_a_mostrar:
-    popup_text = (
-        f"<b>Nome:</b> {ponto['nome']}<br>"
-        f"<b>Código:</b> {ponto['codigo']}<br>"
-        f"<b>Tipo:</b> {ponto['tipo']}<br>"
-        f"<b>Latitude:</b> {ponto['lat']}<br>"
-        f"<b>Longitude:</b> {ponto['lon']}"
+# Tooltip customizado
+tooltip = {
+    "html": "<b>{Name}</b><br>Code: {Code}<br>Lat: {LatDecimal}<br>Lon: {LonDecimal}",
+    "style": {"backgroundColor": "steelblue", "color": "white"}
+}
+
+# Mostrar mapa
+st.pydeck_chart(
+    pdk.Deck(
+        map_style="mapbox://styles/mapbox/light-v9",
+        layers=[layer],
+        initial_view_state=view_state,
+        tooltip=tooltip,
     )
-    folium.Marker(
-        location=[ponto['lat'], ponto['lon']],
-        popup=folium.Popup(popup_text, max_width=350),
-        tooltip=f"{ponto['nome']} ({ponto['codigo']})"
-    ).add_to(marker_cluster)
+)
 
-st_folium(m, width=1200, height=700)
-
-st.caption("Dados lidos automaticamente do LittleNavmap.csv. "
-           "Para atualizar pontos, basta substituir o ficheiro.")
 
 
