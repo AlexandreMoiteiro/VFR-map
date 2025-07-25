@@ -1,127 +1,126 @@
 import streamlit as st
 import pandas as pd
 import leafmap.foliumap as leafmap
-from datetime import datetime
-import geojson
 
-# --- PAGE SETUP ---
-st.set_page_config(layout="wide", page_title="VFR Map Portugal", page_icon="🛩️")
-
-# --- STYLE: GLOBAL STREAMLIT ---
+# 1. Layout global e título
+st.set_page_config(layout="wide", page_title="VFR Points Portugal", page_icon="🛩️")
 st.markdown("""
 <style>
-html, body, [class*="css"] { background-color: #f5f6fa !important; }
-h1, h2, h3 { color: #0a1128 !important; }
-.folium-map {border-radius: 18px; box-shadow: 0 2px 20px #bfc9da;}
-.stButton>button { border-radius: 8px; font-weight: 600;}
-.stTextInput>div>div>input {border-radius: 8px;}
+.folium-map {
+    border-radius: 18px;
+    box-shadow: 0 4px 32px #bbb;
+    margin-bottom: 30px;
+}
+.dataframe {
+    border-radius: 14px;
+    box-shadow: 0 2px 10px #ddd;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# --- HEADER ---
-st.title("🛩️ Significant VFR Points Portugal")
-st.caption("Mapa interativo de pontos VFR para navegação visual em Portugal. Clique nos pontos para detalhes.")
+st.title("🛩️ Significant VFR Points in Portugal")
+st.caption("Mapa profissional e interativo dos principais pontos VFR para navegação visual.")
 
-# --- LER CSV E PREPARAR DADOS ---
+# 2. Lê e prepara dados
 df = pd.read_csv("significant_places.csv")
 df["LatDecimal"] = pd.to_numeric(df["LatDecimal"], errors="coerce")
 df["LonDecimal"] = pd.to_numeric(df["LonDecimal"], errors="coerce")
 df = df.dropna(subset=["LatDecimal", "LonDecimal"])
 
-# --- FILTRO RÁPIDO ---
-col1, col2, col3 = st.columns([1,2,1])
+# 3. Filtro clean no topo
+col1, col2 = st.columns([1.5,1])
+with col1:
+    search = st.text_input("🔍 Filtra por nome ou código VFR:", key="filtro_nome", help="Procura por parte do nome ou código VFR.")
 with col2:
-    search = st.text_input("🔎 Procurar por nome ou código VFR:", "", placeholder="ex: LAVRA ou LAVAD")
-    base_map = st.selectbox("🗺️ Estilo do mapa", [
-        "CartoDB.Positron", "Esri.WorldTopoMap", "Stamen.Terrain", "OpenTopoMap", "CartoDB.DarkMatter"
-    ], index=0, help="Escolhe o fundo do mapa")
+    show_table = st.checkbox("Mostrar tabela", value=False)
 
 if search:
     df = df[df['Name'].str.contains(search, case=False) | df['Code'].str.contains(search, case=False)]
 
-st.markdown(f"<b>Total de pontos no mapa:</b> {len(df)}", unsafe_allow_html=True)
-
-# --- PALETA DE CORES POR PREFIXO (clean e moderna) ---
+# 4. Geração de cor "clean" por prefixo de código (para clusters)
+import random
 def code_color(code):
     prefix = code[:2].upper()
     color_dict = {
-        'AB': '#2979ff', 'AL': '#00bfae', 'AM': '#ffb300', 'BA': '#7e57c2',
-        'BE': '#e65100', 'CA': '#d7263d', 'CO': '#61a5c2', 'EV': '#e84855',
-        'FA': '#43a047', 'PO': '#6d4c41', 'SE': '#00838f', 'VI': '#0a1128', 'MA': '#a5d8ff'
+        'AB': '#d7263d', 'AL': '#1b998b', 'AM': '#f46036', 'BA': '#2e294e', 'BE': '#38618c', 'CA': '#e2c044',
+        'CO': '#61a5c2', 'EV': '#e84855', 'FA': '#34c759', 'PO': '#495867', 'SE': '#994636', 'VI': '#0d3b66', 'MA': '#00a896'
     }
-    return color_dict.get(prefix, "#2e3a4f")
+    return color_dict.get(prefix, "#{:06x}".format(random.randint(0, 0xFFFFFF)))
 
-# --- CRIAR MAPA ---
-center = [df["LatDecimal"].mean(), df["LonDecimal"].mean()]
+df["Color"] = df["Code"].apply(code_color)
+
+# 5. Cria mapa leafmap (visual clean, topo, pro)
 m = leafmap.Map(
-    center=center,
+    center=[df["LatDecimal"].mean(), df["LonDecimal"].mean()],
     zoom=6.3,
-    tiles=base_map,
+    tiles="CartoDB.Positron", # visual limpo e moderno
     draw_control=False,
     measure_control=True,
+    minimap_control=True,
     fullscreen_control=True,
-    attribution_control=False
+    attribution_control=False,
+    locate_control=True,
 )
 
-# --- ADD PONTOS (cluster com cores) ---
-features = []
+# 6. Adiciona clusters e tooltips/popups bonitos
+# Cluster com cor custom, tooltip clean
+geojson_list = []
 for _, row in df.iterrows():
-    cor = code_color(row["Code"])
-    html = f"""
-    <div style='font-family:Montserrat,sans-serif;font-size:15px;'>
-      <b>{row['Name']}</b> <br>
-      <b>Code:</b> <span style='color:{cor}'>{row['Code']}</span><br>
-      <b>Lat:</b> {row['LatDecimal']:.5f} <b>Lon:</b> {row['LonDecimal']:.5f}
-    </div>
-    """
-    features.append({
-        "geometry": {
-            "type": "Point",
-            "coordinates": [row['LonDecimal'], row['LatDecimal']]
-        },
+    geojson_list.append({
         "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [row["LonDecimal"], row["LatDecimal"]]},
         "properties": {
-            "popup": html,
-            "style": {
-                "color": cor,
-                "fillColor": cor,
-                "radius": 8,
-                "weight": 2,
-                "fillOpacity": 0.85
-            }
+            "Name": row["Name"],
+            "Code": row["Code"],
+            "Lat": round(row["LatDecimal"], 5),
+            "Lon": round(row["LonDecimal"], 5),
+            "Color": row["Color"],
+            "popup": f"""
+                <div style='font-size:15px;line-height:1.6'>
+                    <b>{row['Name']}</b><br>
+                    <span style='font-size:12px;color:#888'>Code:</span> <b>{row['Code']}</b><br>
+                    <span style='font-size:12px'>Lat:</span> {row['LatDecimal']:.5f}<br>
+                    <span style='font-size:12px'>Lon:</span> {row['LonDecimal']:.5f}
+                </div>
+            """,
         }
     })
 
-geojson_obj = geojson.FeatureCollection(features)
-
-# Adiciona camada de pontos clusterizados
 m.add_geojson(
-    geojson_obj,
+    {
+        "type": "FeatureCollection",
+        "features": geojson_list,
+    },
     layer_name="VFR Points",
-    marker_type="circle",
-    cluster=True,
-    zoom_to_layer=False,
+    info_mode="on_hover",  # mostra tooltip ao passar o rato
+    marker_type="circle-marker",
+    marker_kwargs={
+        "radius": 7,
+        "fillOpacity": 0.92,
+        "weight": 2,
+        "color": None,  # edge
+        "fillColor": "properties.Color",
+        "popup": "properties.popup"
+    },
+    clustering=True
 )
 
-# --- CONTROLOS MODERNOS ---
-m.add_layer_control()
+# 7. Mostra o mapa
+st.markdown("### Mapa Interativo")
+m.to_streamlit(height=710)
 
-# --- MOSTRA MAPA ---
-m.to_streamlit(height=680, width=1100)
-
-# --- TABELA EM EXPANDER (visual e limpa) ---
-with st.expander("Ver tabela dos pontos VFR"):
+# 8. Tabela clean e responsiva (opcional)
+if show_table:
+    st.markdown("### Tabela dos pontos VFR")
     st.dataframe(
         df[['Name', 'Code', 'LatDecimal', 'LonDecimal']],
         use_container_width=True,
         hide_index=True
     )
 
-# --- FOOTER CLEAN ---
-st.markdown(
-    f"<div style='text-align:right; font-size:13px; color:#888;'>© {datetime.now().year} | Desenvolvido por OpenAI GPT · Design clean · Leafmap</div>",
-    unsafe_allow_html=True
-)
+st.caption("Visualização: tiles CartoDB Positron · Cores distintas por prefixo VFR · Cluster automático · Medição de distâncias · Fullscreen · Minimap")
+
+
 
 
 
