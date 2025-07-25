@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import leafmap.foliumap as leafmap
 from datetime import datetime
+import geojson
 
 # --- PAGE SETUP ---
 st.set_page_config(layout="wide", page_title="VFR Map Portugal", page_icon="🛩️")
@@ -91,7 +92,6 @@ for _, row in df.iterrows():
         }
     })
 
-import geojson
 geojson_obj = geojson.FeatureCollection(features)
 
 # Adiciona camada de pontos clusterizados
@@ -104,7 +104,6 @@ m.add_geojson(
 )
 
 # --- CONTROLOS MODERNOS ---
-m.add_minimap()
 m.add_layer_control()
 
 # --- MOSTRA MAPA ---
@@ -123,6 +122,7 @@ st.markdown(
     f"<div style='text-align:right; font-size:13px; color:#888;'>© {datetime.now().year} | Desenvolvido por OpenAI GPT · Design clean · Leafmap</div>",
     unsafe_allow_html=True
 )
+
 
 
 
