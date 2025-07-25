@@ -1,53 +1,63 @@
 import streamlit as st
 import pandas as pd
-from streamlit_folium import st_folium
-import folium
+import pydeck as pdk
 
-# ======================
-# 1. Carregar os dados
-# ======================
-data = """
-Name,Latitude,LatDir,Longitude,LonDir,Code,LatDecimal,LonDecimal
-Abrantes,3927,N,00811,W,ABRAN,39.45,-8.183333
-Academia Militar Lisboa,3843,N,00908,W,ACMIL,38.716667,-9.133333
-Agucadoura,4125,N,00846,W,AGUSA,41.416667,-8.766667
-Aguda,4102,N,00839,W,AGUDA,41.033333,-8.65
-Agueda,4034,N,00826,W,AGUED,40.566667,-8.433333
-Aguieira,4020,N,00811,W,AGUIE,40.333333,-8.183333
-...
-Vouzela,4043,N,00806,W,VIELA,40.716667,-8.1
-"""  # cole todos os dados aqui!
+# Upload or use your CSV (for local dev, replace with file path)
+CSV_PATH = "significant_places.csv"
 
-from io import StringIO
-df = pd.read_csv(StringIO(data))
+# Title and info
+st.title("Significant VFR Points in Portugal")
+st.markdown("Interactive map of significant VFR points (visual reporting points) for VFR navigation.")
 
-# ===========================
-# 2. Definir o centro do mapa
-# ===========================
-lat_centro = df['LatDecimal'].mean()
-lon_centro = df['LonDecimal'].mean()
+# Read data
+df = pd.read_csv(CSV_PATH)
 
-# =======================
-# 3. Criar o mapa Folium
-# =======================
-m = folium.Map(location=[lat_centro, lon_centro], zoom_start=7, tiles="OpenStreetMap")
+# Optional filter by name or code
+search = st.text_input("Filter by Name or Code", "")
+if search:
+    df = df[df['Name'].str.contains(search, case=False) | df['Code'].str.contains(search, case=False)]
 
-# Adicionar pontos ao mapa
-for idx, row in df.iterrows():
-    popup = f"<b>{row['Name']}</b><br>Código: {row['Code']}<br>Lat: {row['LatDecimal']}<br>Lon: {row['LonDecimal']}"
-    folium.Marker(
-        location=[row['LatDecimal'], row['LonDecimal']],
-        popup=popup,
-        icon=folium.Icon(color="blue", icon="info-sign"),
-    ).add_to(m)
+# Show table
+with st.expander("Show Data Table"):
+    st.dataframe(df[['Name', 'Code', 'LatDecimal', 'LonDecimal']])
 
-# ===========================
-# 4. Mostrar no Streamlit App
-# ===========================
-st.title("Mapa Interativo de Pontos VFR")
-st.write(
-    "Visualize todos os pontos VFR do país num mapa interativo. Clique nos marcadores para detalhes."
+# Map
+st.pydeck_chart(
+    pdk.Deck(
+        map_style="mapbox://styles/mapbox/light-v9",
+        initial_view_state=pdk.ViewState(
+            latitude=df['LatDecimal'].mean(),
+            longitude=df['LonDecimal'].mean(),
+            zoom=6.5,
+            pitch=0,
+        ),
+        layers=[
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=df,
+                get_position='[LonDecimal, LatDecimal]',
+                get_color='[200, 30, 0, 160]',
+                get_radius=1000,
+                pickable=True,
+                auto_highlight=True,
+            ),
+            pdk.Layer(
+                "TextLayer",
+                data=df,
+                get_position='[LonDecimal, LatDecimal]',
+                get_text="Code",
+                get_size=16,
+                get_color=[0, 0, 0],
+                get_angle=0,
+                get_alignment_baseline="'bottom'",
+            ),
+        ],
+        tooltip={"text": "{Name}\nCode: {Code}\nLat: {LatDecimal}\nLon: {LonDecimal}"},
+    )
 )
-st_folium(m, width=900, height=600)
+
+st.info("Click on the points to see details. Use the filter above to quickly find a specific VFR point by name or code.")
+
+
 
 
