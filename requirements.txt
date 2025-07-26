@@ -1,3 +1,4 @@
-streamlit>=1.30
-pandas>=2.0
-pydeck>=0.8.1
+streamlit>=1.30.0
+pandas>=2.0.0
+folium>=0.15.0
+streamlit-folium>=0.18.0
