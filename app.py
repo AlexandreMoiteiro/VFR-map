@@ -1,94 +1,98 @@
 import streamlit as st
 import pandas as pd
-import pydeck as pdk
+import folium
+from folium.plugins import MarkerCluster, Search
+from streamlit_folium import st_folium
 
-# --- Lê CSV e prepara dados ---
-CSV_PATH = "significant_places.csv"
-df = pd.read_csv(CSV_PATH)
+# === Estética do Streamlit ===
+st.set_page_config(page_title="VFR Points Portugal", layout="wide")
+st.markdown("""
+    <style>
+    .main { background-color: #f8fafc; }
+    .css-1kyxreq { background: #f8fafc !important; }
+    .folium-map { border-radius: 16px; box-shadow: 0 4px 16px #0002; }
+    </style>
+""", unsafe_allow_html=True)
+
+# === Leitura e limpeza dos dados ===
+df = pd.read_csv("significant_places.csv")
 df["LatDecimal"] = pd.to_numeric(df["LatDecimal"], errors="coerce")
 df["LonDecimal"] = pd.to_numeric(df["LonDecimal"], errors="coerce")
 df = df.dropna(subset=["LatDecimal", "LonDecimal"])
 
-# --- Streamlit Layout ---
-st.set_page_config(layout="wide")
-st.markdown("""
-    <style>
-        .big-title { font-size: 3em; font-weight: 700; letter-spacing: -2px; }
-        .subtitle { font-size: 1.4em; color: #888; margin-bottom: 1.5em;}
-    </style>
-""", unsafe_allow_html=True)
+# === Filtro de pesquisa ===
+col1, col2 = st.columns([2,1])
+with col1:
+    st.title("🗺️ Pontos VFR Significativos - Portugal")
+    st.write(
+        "Mapa interativo de pontos VFR (Visual Reporting Points) para navegação visual. "
+        "Aproxime, clique nos marcadores para mais detalhes ou utilize a caixa de pesquisa."
+    )
+with col2:
+    search = st.text_input("🔍 Pesquisar por nome ou código", "")
 
-st.markdown('<div class="big-title">VFR Points Portugal</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Mapa interativo dos pontos VFR em Portugal, moderno e responsivo.</div>', unsafe_allow_html=True)
-
-st.write(f"🗺️ **Total de pontos:** {len(df)}")
-
-# --- Filtro Search ---
-search = st.text_input("🔎 Filtrar por nome ou código", "")
-filtered = df
 if search:
-    filtered = df[df['Name'].str.contains(search, case=False) | df['Code'].str.contains(search, case=False)]
+    df = df[df['Name'].str.contains(search, case=False) | df['Code'].str.contains(search, case=False)]
 
-# --- Layer de Clustering (Hexagon) e Pontos individuais ---
-hex_layer = pdk.Layer(
-    "HexagonLayer",
-    data=filtered,
-    get_position='[LonDecimal, LatDecimal]',
-    radius=9000,                # (metros, ajusta se quiseres mais clusterização)
-    elevation_scale=50,
-    elevation_range=[0, 2500],
-    pickable=True,
-    extruded=True,
-    coverage=1,
+st.write(f"**Total de pontos no mapa:** {len(df)}")
+
+# === Criação do mapa ===
+m = folium.Map(
+    location=[df["LatDecimal"].mean(), df["LonDecimal"].mean()],
+    zoom_start=6.3,
+    tiles="CartoDB Positron"
 )
 
-scatter_layer = pdk.Layer(
-    "ScatterplotLayer",
-    data=filtered,
-    get_position='[LonDecimal, LatDecimal]',
-    get_color='[32, 169, 226, 180]',  # azul bonito, meio transparente
-    get_radius=1700,
-    pickable=True,
-    auto_highlight=True,
-)
+# Cluster para agrupar pontos próximos
+marker_cluster = MarkerCluster(
+    name="VFR Points",
+    disableClusteringAtZoom=10
+).add_to(m)
 
-# --- Deck.gl Map config com tiles Carto (não precisa token) ---
-MAP_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+# Lista para pesquisa no mapa
+search_data = []
 
-view = pdk.ViewState(
-    latitude=filtered["LatDecimal"].mean(),
-    longitude=filtered["LonDecimal"].mean(),
-    zoom=6.4 if len(filtered) > 1 else 10,
-    pitch=36,    # ligeiro 3D, podes pôr 0 para flat
-    bearing=2
-)
+# Marcação dos pontos
+for _, row in df.iterrows():
+    popup_html = f"""
+        <div style='font-size:16px; font-weight:600'>{row['Name']} <span style='font-size:12px;'>({row['Code']})</span></div>
+        <div style='font-size:13px;'>Latitude: <b>{row['LatDecimal']}</b><br>
+        Longitude: <b>{row['LonDecimal']}</b></div>
+    """
+    marker = folium.Marker(
+        location=[row["LatDecimal"], row["LonDecimal"]],
+        popup=folium.Popup(popup_html, max_width=300),
+        icon=folium.Icon(color="red", icon="glyphicon glyphicon-flag"),
+        tooltip=f"{row['Name']} ({row['Code']})"
+    )
+    marker.add_to(marker_cluster)
+    # Para a busca
+    search_data.append({
+        "loc": [row["LatDecimal"], row["LonDecimal"]],
+        "title": f"{row['Name']} ({row['Code']})"
+    })
 
-tooltip = {
-    "html": "<b>{Name}</b> <span style='color:#888'>({Code})</span><br>"
-            "Lat: <b>{LatDecimal:.4f}</b><br>"
-            "Lon: <b>{LonDecimal:.4f}</b>",
-    "style": {
-        "backgroundColor": "#fff",
-        "color": "#333",
-        "fontSize": "1.1em",
-        "borderRadius": "8px",
-        "padding": "10px"
-    }
-}
+# Search no mapa
+Search(
+    layer=marker_cluster,
+    search_label="title",
+    placeholder="Pesquisar ponto no mapa...",
+    collapsed=False
+).add_to(m)
 
-r = pdk.Deck(
-    map_style=MAP_STYLE,
-    initial_view_state=view,
-    layers=[hex_layer, scatter_layer],
-    tooltip=tooltip,
-)
+# Layer control
+folium.LayerControl().add_to(m)
 
-# --- Render Mapa Pydeck ---
-st.pydeck_chart(r, use_container_width=True)
+# Mostra o mapa bonitão
+st_folium(m, width=950, height=650)
 
-# --- Data Table, opcional ---
-with st.expander("👁️ Ver tabela de dados"):
-    st.dataframe(filtered[['Name', 'Code', 'LatDecimal', 'LonDecimal']])
+# Opcional: Tabela dos dados
+with st.expander("Mostrar tabela de pontos VFR"):
+    st.dataframe(df[['Name', 'Code', 'LatDecimal', 'LonDecimal']])
+
+st.info("Dica: Use o zoom e a pesquisa para localizar rapidamente um ponto específico. Pode clicar nos marcadores para detalhes.")
+
+
 
 
 
