@@ -1,5 +1,4 @@
-streamlit>=1.30
-pandas>=2.0
-folium>=0.15
-streamlit-folium>=0.14
-Kepler.gl
+streamlit
+pandas
+keplergl==0.3.2
+streamlit-keplergl
