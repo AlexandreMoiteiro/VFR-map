@@ -1,52 +1,77 @@
 import streamlit as st
 import pandas as pd
-import leafmap.foliumap as leafmap
+import folium
+from streamlit_folium import st_folium
 
-# Carregar CSV
-CSV_PATH = "significant_places.csv"
-df = pd.read_csv(CSV_PATH)
+# Config layout
+st.set_page_config(page_title="VFR Points Portugal", layout="wide")
 
-# Limpa e converte coordenadas
+# CSS minimalista
+st.markdown("""
+    <style>
+    .stApp { background: #f7f7f7; }
+    .folium-map { border-radius: 12px; margin: 0 auto; box-shadow: 0 4px 18px #e1e1e1;}
+    h1 { text-align: center !important; }
+    </style>
+""", unsafe_allow_html=True)
+
+# Carrega dados
+df = pd.read_csv("significant_places.csv")
 df["LatDecimal"] = pd.to_numeric(df["LatDecimal"], errors="coerce")
 df["LonDecimal"] = pd.to_numeric(df["LonDecimal"], errors="coerce")
 df = df.dropna(subset=["LatDecimal", "LonDecimal"])
 
-# Filtro por nome/código
-search = st.text_input("Filtra por nome ou código", "")
+# Título e filtro centralizado
+st.markdown("<h1 style='text-align:center;'>Significant VFR Points in Portugal</h1>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:center; color:#444; font-size:1.08em; margin-bottom:18px;'>Mapa interativo — clique nos pontos para detalhes</div>", unsafe_allow_html=True)
+
+# Campo de pesquisa, centrado
+cols = st.columns([2, 4, 2])
+with cols[1]:
+    search = st.text_input("Filtrar por nome ou código VFR", "")
+
 if search:
-    df = df[df["Name"].str.contains(search, case=False) | df["Code"].str.contains(search, case=False)]
+    df = df[df['Name'].str.contains(search, case=False) | df['Code'].str.contains(search, case=False)]
 
-st.title("Significant VFR Points in Portugal")
-st.write(f"Total de pontos no mapa: {len(df)}")
+# Total visível, centralizado
+st.markdown(f"<div style='text-align:center; font-size:17px; margin-bottom: 9px;'>Pontos visíveis: <b>{len(df)}</b></div>", unsafe_allow_html=True)
 
-with st.expander("Ver tabela de dados"):
-    st.dataframe(df[['Name', 'Code', 'LatDecimal', 'LonDecimal']])
+# Centro fixo de Portugal Continental (Arouca/Coimbra área, NÃO média dos dados)
+center_lat, center_lon = 39.7, -8.1
 
-# Cria o mapa
-m = leafmap.Map(
-    center=[df.LatDecimal.mean(), df.LonDecimal.mean()],
-    zoom=6,
-    draw_control=False,
-    measure_control=False,
-    fullscreen_control=True,
-    locate_control=False,
-    layers_control=True,
-    # Experimenta outros: "CartoDB.DarkMatter", "Esri.WorldImagery", "CartoDB.Positron", etc
-    basemap="CartoDB.Positron"
+m = folium.Map(
+    location=[center_lat, center_lon],
+    zoom_start=7,
+    tiles="CartoDB Positron",
+    control_scale=True
 )
 
-# Adiciona pontos (cluster automático!)
-m.add_points_from_xy(
-    df,
-    x="LonDecimal",
-    y="LatDecimal",
-    popup=["Name", "Code", "LatDecimal", "LonDecimal"],
-    icon_colors="red"
-)
+# Pontos com aspeto profissional: azul petróleo ou laranja sóbrio
+POINT_COLOR = "#205081"  # Azul petróleo (ou "#EA7317" para laranja elegante)
+for _, row in df.iterrows():
+    folium.CircleMarker(
+        location=[row["LatDecimal"], row["LonDecimal"]],
+        radius=5.5,
+        fill=True,
+        color="white",
+        fill_color=POINT_COLOR,
+        fill_opacity=0.92,
+        weight=1,
+        tooltip=f"{row['Name']} ({row['Code']})",
+        popup=folium.Popup(
+            f"<b>{row['Name']}</b><br>Código: <b>{row['Code']}</b>", max_width=220
+        )
+    ).add_to(m)
 
-# Mostra no Streamlit
-m.to_streamlit(height=650, width=950)
+# Remove clusters: só marcadores individuais
+# Fullscreen e minimap removidos para ainda mais clean
 
+# Mapa super largo, sempre central, sem barras
+st_folium(m, width=1200, height=640, use_container_width=False)
+
+# Tabela só se quiseres (opcional)
+with st.expander("Ver tabela dos pontos mostrados no mapa"):
+    st.dataframe(df[['Name', 'Code', 'LatDecimal', 'LonDecimal']], use_container_width=True)
 
 
 
