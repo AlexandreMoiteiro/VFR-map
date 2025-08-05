@@ -17,39 +17,53 @@ def dms_to_decimal(coord):
     if hemi in 'SW': decimal = -decimal
     return decimal
 
-# --- Ler ficheiros fixed-width ---
-localidades = pd.read_fwf("Localidades-Nova-versao-230223.csv", skip_blank_lines=True)
-ad_df = pd.read_fwf("AD-HEL-ULM.csv", skip_blank_lines=True)
+# --- Função para descobrir o header correto ---
+def find_header_row(filepath, search_terms):
+    with open(filepath, encoding='utf-8') as f:
+        for idx, line in enumerate(f):
+            if all(term in line for term in search_terms):
+                return idx
+    return 0  # fallback
 
-# --- Limpeza de linhas irrelevantes/vazias ---
+# --- Lê e limpa LOCALIDADES ---
+localidades_file = "Localidades-Nova-versao-230223.csv"
+header_row_loc = find_header_row(localidades_file, ["LOCALIDADE", "COORDENADAS"])
+localidades = pd.read_fwf(localidades_file, skip_blank_lines=True, header=header_row_loc)
+localidades.columns = [c.strip() for c in localidades.columns]
+st.write("Colunas lidas em localidades:", localidades.columns.tolist())
+
+# Remove linhas sem localidade ou com "Total de registos"
 localidades = localidades.dropna(how='all')
-if 'LOCALIDADE' in localidades.columns:
+if "LOCALIDADE" in localidades.columns:
     localidades = localidades[~localidades['LOCALIDADE'].astype(str).str.contains('Total de registos|nan', na=False, case=False)]
     localidades = localidades[~localidades['LOCALIDADE'].astype(str).str.strip().eq('')]
 else:
-    st.error("Coluna 'LOCALIDADE' não encontrada em localidades.")
+    st.error("Coluna 'LOCALIDADE' não encontrada em localidades. Encontradas: " + ", ".join(localidades.columns))
     st.stop()
 
+# --- Lê e limpa AD/HEL/ULM ---
+ad_file = "AD-HEL-ULM.csv"
+header_row_ad = find_header_row(ad_file, ["Ident", "Latitude", "Longitude"])
+ad_df = pd.read_fwf(ad_file, skip_blank_lines=True, header=header_row_ad)
+ad_df.columns = [c.strip() for c in ad_df.columns]
+st.write("Colunas lidas em AD/HEL/ULM:", ad_df.columns.tolist())
+
 ad_df = ad_df.dropna(how='all')
-if 'Ident' in ad_df.columns:
+if "Ident" in ad_df.columns:
     ad_df = ad_df[~ad_df['Ident'].astype(str).str.contains('Coord for FPL|Ident', na=False, case=False)]
     ad_df = ad_df[~ad_df['Ident'].astype(str).str.strip().eq('')]
 else:
-    st.error("Coluna 'Ident' não encontrada em AD/Heli/ULM.")
+    st.error("Coluna 'Ident' não encontrada em AD/Heli/ULM. Encontradas: " + ", ".join(ad_df.columns))
     st.stop()
 
-# --- Ajuste de nomes de colunas (remove espaços) ---
-localidades.columns = [c.strip() for c in localidades.columns]
-ad_df.columns = [c.strip() for c in ad_df.columns]
-
-# --- Variáveis para os nomes das colunas principais ---
+# --- Variáveis para os nomes das colunas ---
 loc_name_col = 'LOCALIDADE'
 loc_coord_col = 'COORDENADAS'
-ad_name_col = 'Name for FPL Field 18 DEP/ DEST/'
+ad_name_col = [c for c in ad_df.columns if 'Name for FPL' in c][0]
 ad_ident_col = 'Ident'
 ad_lat_col = 'Latitude'
 ad_lon_col = 'Longitude'
-ad_tipo_col = ad_name_col  # Não existe uma coluna explícita de tipo, mas o nome normalmente inclui ULM/HELIPORT/AERODROME/etc
+ad_tipo_col = ad_name_col
 
 # --- Processar coordenadas das localidades ---
 def split_coords(x):
@@ -180,5 +194,6 @@ with st.expander("Ver tabela de localidades/pontos VFR"):
     st.dataframe(localidades_f[[loc_name_col, loc_coord_col, 'LatDecimal', 'LonDecimal']], use_container_width=True)
 with st.expander("Ver tabela de Aeródromos/Helis/ULM"):
     st.dataframe(ad_f[[ad_ident_col, ad_name_col, ad_lat_col, ad_lon_col, 'LatDecimal', 'LonDecimal', 'TIPO_NORM']], use_container_width=True)
+
 
 
