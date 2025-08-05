@@ -4,57 +4,54 @@ import folium
 from streamlit_folium import st_folium
 import re
 
-# --- Função para converter DMS para decimal ---
+# --- Função para converter DMS (DDMMSSN/W) para decimal ---
 def dms_to_decimal(coord):
-    """Converte coordenadas do tipo DDMMSSN/DDMMSSS para decimal."""
     if pd.isnull(coord): return None
     coord = str(coord).strip()
-    match = re.match(r'(\d{2,3})(\d{2})(\d{2})([NSEW])', coord)
+    match = re.match(r"(\d{2,3})(\d{2})(\d{2}(?:\.\d+)?)?([NSEW])", coord)
     if not match: return None
     d, m, s, hemi = match.groups()
-    decimal = int(d) + int(m)/60 + int(s)/3600
+    d, m = int(d), int(m)
+    s = float(s) if s else 0.0
+    decimal = d + m / 60 + s / 3600
     if hemi in 'SW': decimal = -decimal
     return decimal
 
-# --- Lê os ficheiros CSV (caminhos iguais aos de upload) ---
-localidades = pd.read_csv("Localidades-Nova-versao-230223.csv")
-ad_df = pd.read_csv("AD-HEL-ULM.csv")
+# --- Ler ficheiros fixed-width ---
+localidades = pd.read_fwf("Localidades-Nova-versao-230223.csv", skip_blank_lines=True)
+ad_df = pd.read_fwf("AD-HEL-ULM.csv", skip_blank_lines=True)
 
-# --- Descobre os nomes certos das colunas (pode ser diferente dependendo da extração!) ---
-# Localidades: Nome da localidade e coordenadas
-loc_cols = [c.upper() for c in localidades.columns]
-if 'LOCALIDADE' in loc_cols:
-    loc_name_col = 'LOCALIDADE'
-elif 'Nome' in localidades.columns:
-    loc_name_col = 'Nome'
+# --- Limpeza de linhas irrelevantes/vazias ---
+localidades = localidades.dropna(how='all')
+if 'LOCALIDADE' in localidades.columns:
+    localidades = localidades[~localidades['LOCALIDADE'].astype(str).str.contains('Total de registos|nan', na=False, case=False)]
+    localidades = localidades[~localidades['LOCALIDADE'].astype(str).str.strip().eq('')]
 else:
-    loc_name_col = localidades.columns[0]
+    st.error("Coluna 'LOCALIDADE' não encontrada em localidades.")
+    st.stop()
 
-if 'COORDENADAS' in loc_cols:
-    loc_coord_col = 'COORDENADAS'
-elif 'Coordenadas' in localidades.columns:
-    loc_coord_col = 'Coordenadas'
+ad_df = ad_df.dropna(how='all')
+if 'Ident' in ad_df.columns:
+    ad_df = ad_df[~ad_df['Ident'].astype(str).str.contains('Coord for FPL|Ident', na=False, case=False)]
+    ad_df = ad_df[~ad_df['Ident'].astype(str).str.strip().eq('')]
 else:
-    loc_coord_col = localidades.columns[1]
+    st.error("Coluna 'Ident' não encontrada em AD/Heli/ULM.")
+    st.stop()
 
-# ADs: Nome, identificador, tipo, latitude, longitude
-ad_cols = [c.upper() for c in ad_df.columns]
-def col_match(df, options):
-    for o in options:
-        if o in df.columns:
-            return o
-        if o.upper() in [c.upper() for c in df.columns]:
-            return [c for c in df.columns if c.upper() == o.upper()][0]
-    return df.columns[0]
+# --- Ajuste de nomes de colunas (remove espaços) ---
+localidades.columns = [c.strip() for c in localidades.columns]
+ad_df.columns = [c.strip() for c in ad_df.columns]
 
-ad_name_col = col_match(ad_df, ['NOME', 'Nome', 'DESIGNAÇÃO', 'Designação'])
-ad_ident_col = col_match(ad_df, ['IDENT', 'ID', 'INDICATIVO'])
-ad_tipo_col = col_match(ad_df, ['TIPO', 'Tipo', 'TYPE', 'Type'])
-ad_lat_col = col_match(ad_df, ['LATITUDE', 'LAT', 'Latitude'])
-ad_lon_col = col_match(ad_df, ['LONGITUDE', 'LON', 'Longitude'])
+# --- Variáveis para os nomes das colunas principais ---
+loc_name_col = 'LOCALIDADE'
+loc_coord_col = 'COORDENADAS'
+ad_name_col = 'Name for FPL Field 18 DEP/ DEST/'
+ad_ident_col = 'Ident'
+ad_lat_col = 'Latitude'
+ad_lon_col = 'Longitude'
+ad_tipo_col = ad_name_col  # Não existe uma coluna explícita de tipo, mas o nome normalmente inclui ULM/HELIPORT/AERODROME/etc
 
-# --- Processa coordenadas ---
-# Para Localidades (normalmente uma coluna com as duas coordenadas separadas por espaço)
+# --- Processar coordenadas das localidades ---
 def split_coords(x):
     if pd.isnull(x): return (None, None)
     x = str(x).replace('\u200b', '').replace('\n', ' ')
@@ -67,23 +64,23 @@ localidades['LatDecimal'] = localidades['LAT_RAW'].apply(dms_to_decimal)
 localidades['LonDecimal'] = localidades['LON_RAW'].apply(dms_to_decimal)
 localidades = localidades.dropna(subset=['LatDecimal', 'LonDecimal'])
 
-# Para ADs/Helis/ULM (duas colunas separadas)
+# --- Processar coordenadas dos ADs/Helis/ULM ---
 ad_df['LatDecimal'] = ad_df[ad_lat_col].apply(dms_to_decimal)
 ad_df['LonDecimal'] = ad_df[ad_lon_col].apply(dms_to_decimal)
 ad_df = ad_df.dropna(subset=['LatDecimal', 'LonDecimal'])
 
-# Classifica o tipo em três classes para ícone
-def classify_tipo(t):
-    t = str(t).lower()
-    if 'heli' in t:
+# --- Classifica tipo ---
+def classify_tipo(nome):
+    n = str(nome).lower()
+    if 'heli' in n:
         return 'Heliporto'
-    elif 'ulm' in t:
+    elif 'ulm' in n:
         return 'ULM'
     else:
         return 'Aeródromo'
 ad_df['TIPO_NORM'] = ad_df[ad_tipo_col].apply(classify_tipo)
 
-# --- APP STREAMLIT ---
+# --- STREAMLIT APP ---
 st.set_page_config(page_title="VFR & Aeródromos Portugal", layout="wide")
 
 st.markdown("""
@@ -103,7 +100,7 @@ cols = st.columns([2, 5, 2])
 with cols[1]:
     search = st.text_input("Filtrar por nome/código/localidade", "")
 
-# Filtro nos dois conjuntos de dados
+# Filtro
 if search:
     localidades_f = localidades[localidades[loc_name_col].str.contains(search, case=False, na=False)]
     ad_f = ad_df[
@@ -120,7 +117,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- Mapa híbrido ESRI + labels ---
+# --- Mapa híbrido ESRI ---
 CENTER_PT = [39.7, -8.1]
 m = folium.Map(
     location=CENTER_PT,
@@ -128,7 +125,6 @@ m = folium.Map(
     tiles=None,
     control_scale=True
 )
-# Híbrido Esri
 folium.TileLayer(
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     attr="Esri",
@@ -151,14 +147,14 @@ for _, row in localidades_f.iterrows():
         radius=5,
         fill=True,
         color="#fff",
-        fill_color="#FFB300",  # Amarelo laranja
+        fill_color="#FFB300",
         fill_opacity=0.88,
         weight=1.5,
         tooltip=row[loc_name_col],
         popup=f"<b>{row[loc_name_col]}</b>",
     ).add_to(m)
 
-# --- Aeródromos/Helis/ULM: ícone distinto por tipo ---
+# --- AD/Helis/ULM: ícone diferente ---
 for _, row in ad_f.iterrows():
     if row['TIPO_NORM'] == 'Aeródromo':
         icon = folium.Icon(color='blue', icon='plane', prefix='fa')
@@ -175,7 +171,7 @@ for _, row in ad_f.iterrows():
         popup=f"<b>{row[ad_name_col]}</b><br>{row[ad_ident_col]}<br>{row['TIPO_NORM']}",
     ).add_to(m)
 
-# Centraliza o mapa na página
+# --- Centraliza o mapa na página ---
 map_cols = st.columns([0.1, 0.8, 0.1])
 with map_cols[1]:
     st_folium(m, width=1100, height=650)
@@ -183,8 +179,6 @@ with map_cols[1]:
 with st.expander("Ver tabela de localidades/pontos VFR"):
     st.dataframe(localidades_f[[loc_name_col, loc_coord_col, 'LatDecimal', 'LonDecimal']], use_container_width=True)
 with st.expander("Ver tabela de Aeródromos/Helis/ULM"):
-    st.dataframe(ad_f[[ad_ident_col, ad_name_col, ad_tipo_col, ad_lat_col, ad_lon_col, 'LatDecimal', 'LonDecimal']], use_container_width=True)
-
-
+    st.dataframe(ad_f[[ad_ident_col, ad_name_col, ad_lat_col, ad_lon_col, 'LatDecimal', 'LonDecimal', 'TIPO_NORM']], use_container_width=True)
 
 
