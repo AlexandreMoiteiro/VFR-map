@@ -1,4 +1,6 @@
-streamlit
-folium
-streamlit-folium
-pandas
+streamlit>=1.25
+folium>=0.15
+streamlit-folium>=0.13
+pandas>=1.4
+tabula-py>=2.9
+PyPDF2>=3.0
