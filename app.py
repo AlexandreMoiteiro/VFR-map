@@ -1,224 +1,281 @@
-import streamlit as st
-import pandas as pd
-import folium
-from streamlit_folium import st_folium
+# app.py
 import re
+from pathlib import Path
 
-st.set_page_config(page_title="VFR & Aeródromos Portugal", layout="wide")
+import pandas as pd
+import streamlit as st
+import folium
+from folium.plugins import MarkerCluster
+from streamlit_folium import st_folium
 
-# ---------- Utilidades ----------
+# ----------------------------
+# Configuração da página
+# ----------------------------
+st.set_page_config(page_title="VFR Map PT", layout="wide")
+
+# Container central (sem sidebar)
+st.markdown(
+    """
+    <style>
+      /* esconder sidebar */
+      [data-testid="stSidebar"] {display: none;}
+      /* centralizar o conteúdo */
+      .main > div {display: flex; justify-content: center;}
+      .block-container {padding-top: 1rem; max-width: 1200px;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.title("VFR Map — Portugal (Híbrido)")
+st.caption("Localidades + AD / Helis / ULM (dados CSV)")
+
+# ----------------------------
+# Caminhos dos ficheiros
+# ----------------------------
+BASE = Path("/mnt/data")
+LOCALIDADES_CSV = BASE / "Localidades-Nova-versao-230223.csv"
+AD_CSV = BASE / "AD-HEL-ULM.csv"
+
+# ----------------------------
+# Utils
+# ----------------------------
 def dms_to_decimal(coord: str):
-    """Converte DMS tipo '404903N' ou '0073211W' para decimal."""
-    if coord is None or (isinstance(coord, float) and pd.isna(coord)):
+    """
+    Converte coordenadas DMS/DM -> decimal.
+    Aceita:
+      - DDMMSSH / DDDMMSSH            (ex: 404903N, 0091547W)
+      - DDMMSS.sH / DDDMMSS.sH       (ex: 372755.90N, 0085613.4W)
+      - DDMMH / DDDMMH               (ex: 4049N, 00732W)
+    Retorna float (negativo para S/W) ou None.
+    """
+    if coord is None:
         return None
-    coord = str(coord).strip().replace(" ", "")
-    m = re.match(r"^(\d{2,3})(\d{2})(\d{2})([NSEW])$", coord)
-    if not m:
+    s = str(coord).strip().upper().replace(" ", "")
+    if not s:
         return None
-    d, mnt, s, hemi = m.groups()
-    val = int(d) + int(mnt)/60 + int(s)/3600
+    # manter apenas dígitos, ponto e N/S/E/W (csvs às vezes trazem lixo)
+    s = "".join(ch for ch in s if ch.isdigit() or ch in "NSEW.")
+    if not s or s[-1] not in "NSEW":
+        return None
+
+    hemi = s[-1]
+    body = s[:-1]
+
+    # DMS com segundos (pode ter decimais)
+    m = re.match(r"^(\d{2,3})(\d{2})(\d{2}(?:\.\d+)?)$", body)
+    if m:
+        d, mnt, sec = m.groups()
+        val = int(d) + int(mnt) / 60 + float(sec) / 3600
+    else:
+        # DM sem segundos
+        m = re.match(r"^(\d{2,3})(\d{2})$", body)
+        if not m:
+            return None
+        d, mnt = m.groups()
+        val = int(d) + int(mnt) / 60
+
     if hemi in ("S", "W"):
         val = -val
     return val
 
-def find_col(df, candidates):
-    for c in candidates:
+
+def split_coord_pair(text: str):
+    """
+    Extrai (lat, lon) de uma string tipo '392747N 0081159W' (com espaço).
+    Retorna (lat_str, lon_str) ou (None, None).
+    """
+    if not isinstance(text, str):
+        return None, None
+    s = text.strip().upper()
+    parts = re.findall(r"\d+(?:\.\d+)?[NSEW]", s)
+    if len(parts) >= 2:
+        return parts[0], parts[1]
+    return None, None
+
+
+def build_lat_lon_from_any(df: pd.DataFrame):
+    """
+    Tenta construir colunas 'lat' e 'lon' a partir de diferentes formatos.
+    - Colunas já decimais: LatDecimal / LonDecimal
+    - Colunas DMS separadas: Latitude / Longitude (ex: 372755.90N / 0084414.21W)
+    - Coluna única: COORDENADAS com '392747N 0081159W'
+    - Colunas alternativas vistas nos ficheiros
+    """
+    # normalizar nomes
+    df = df.copy()
+    df.columns = [c.strip() for c in df.columns]
+
+    # 1) já decimais?
+    lat_col = next((c for c in df.columns if c.lower() in ("latdecimal", "latitude_decimal", "lat_dec")), None)
+    lon_col = next((c for c in df.columns if c.lower() in ("londecimal", "longitude_decimal", "lon_dec", "lngdecimal")), None)
+    if lat_col and lon_col:
+        df["lat"] = pd.to_numeric(df[lat_col], errors="coerce")
+        df["lon"] = pd.to_numeric(df[lon_col], errors="coerce")
+        return df
+
+    # 2) DMS em colunas 'Latitude' / 'Longitude' (ou variantes)
+    lat_cands = [c for c in df.columns if c.lower() in ("latitude", "lat", "lat_dms", "lat dms")]
+    lon_cands = [c for c in df.columns if c.lower() in ("longitude", "lon", "lon_dms", "lon dms")]
+    if lat_cands and lon_cands:
+        lc, lo = lat_cands[0], lon_cands[0]
+        df["lat"] = df[lc].apply(dms_to_decimal)
+        df["lon"] = df[lo].apply(dms_to_decimal)
+        return df
+
+    # 3) coluna única tipo 'COORDENADAS' com "LAT LON"
+    single_cands = [c for c in df.columns if c.upper() in ("COORDENADAS", "COORD", "COORDS", "COORD FOR FPL FIELD 18")]
+    if single_cands:
+        sc = single_cands[0]
+        lats, lons = [], []
+        for v in df[sc].astype(str).tolist():
+            la, lo = split_coord_pair(v)
+            lats.append(dms_to_decimal(la) if la else None)
+            lons.append(dms_to_decimal(lo) if lo else None)
+        df["lat"] = lats
+        df["lon"] = lons
+        return df
+
+    # 4) tentativa genérica: procurar qualquer par com N/S e E/W
+    if "lat" not in df or "lon" not in df:
+        # procurar duas colunas que contenham N/S e E/W
+        text_cols = [c for c in df.columns if df[c].astype(str).str.contains("[NSEW]", regex=True, na=False).any()]
+        if len(text_cols) >= 2:
+            # palpite simples: as duas primeiras
+            a, b = text_cols[:2]
+            # inferir qual é lat (N/S) e qual é lon (E/W)
+            sample_a = "".join(re.findall(r"[NSEW]", " ".join(df[a].astype(str).head(50).tolist())))
+            sample_b = "".join(re.findall(r"[NSEW]", " ".join(df[b].astype(str).head(50).tolist())))
+            lat_col_guess = a if ("N" in sample_a or "S" in sample_a) else b
+            lon_col_guess = b if lat_col_guess == a else a
+            df["lat"] = df[lat_col_guess].apply(dms_to_decimal)
+            df["lon"] = df[lon_col_guess].apply(dms_to_decimal)
+            return df
+
+    # se tudo falhar, criar colunas vazias
+    df["lat"] = pd.NA
+    df["lon"] = pd.NA
+    return df
+
+
+def load_csv_safe(path: Path) -> pd.DataFrame:
+    return pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8", on_bad_lines="skip")
+
+
+def bounds_from_points(latitudes, longitudes):
+    lat_min, lat_max = min(latitudes), max(latitudes)
+    lon_min, lon_max = min(longitudes), max(longitudes)
+    return [[lat_min, lon_min], [lat_max, lon_max]]
+
+
+# ----------------------------
+# Ler dados
+# ----------------------------
+try:
+    localidades_raw = load_csv_safe(LOCALIDADES_CSV)
+except Exception as e:
+    st.error(f"Erro a ler {LOCALIDADES_CSV.name}: {e}")
+    st.stop()
+
+try:
+    ad_raw = load_csv_safe(AD_CSV)
+except Exception as e:
+    st.error(f"Erro a ler {AD_CSV.name}: {e}")
+    st.stop()
+
+localidades = build_lat_lon_from_any(localidades_raw)
+ad_df = build_lat_lon_from_any(ad_raw)
+
+# Nome / label (melhor esforço)
+def best_name(df):
+    for c in ["LOCALIDADE", "Name", "NAME", "Ident", "IDENT", "CÓDIGO 5 LETRAS", "CODIGO 5 LETRAS", "Código 5 Letras"]:
         if c in df.columns:
+            return c
+    # fallback: primeira coluna de texto
+    for c in df.columns:
+        if df[c].astype(str).str.len().max() > 0 and c not in ("lat", "lon"):
             return c
     return None
 
-def build_lat_lon_from_any(df, single_coord_candidates, lat_candidates, lon_candidates):
-    """
-    Cria LatDecimal/LonDecimal a partir de:
-      A) uma única coluna com 'LAT LON' (ex: '404903N 0073211W'), ou
-      B) duas colunas LAT / LON em DMS.
-    """
-    # Tenta A) coluna única
-    coord_col = find_col(df, single_coord_candidates)
-    if coord_col:
-        def split_coords(x):
-            if pd.isna(x):
-                return (None, None)
-            parts = str(x).strip().split()
-            if len(parts) >= 2:
-                return (parts[0], parts[1])
-            # às vezes vêm coladas sem espaço: tenta cortar pelo hemisfério
-            s = str(x).strip().upper()
-            s = s.replace("\u200b", "")
-            # procura o primeiro N/S para separar latitude
-            idx = max(s.find("N"), s.find("S"))
-            if idx != -1:
-                lat = s[:idx+1]
-                lon = s[idx+1:].strip()
-                return (lat, lon) if lon else (lat, None)
-            return (None, None)
+loc_name_col = best_name(localidades) or "LOCALIDADE"
+ad_name_col = best_name(ad_df) or "Name"
 
-        df[["__LAT_RAW", "__LON_RAW"]] = df[coord_col].apply(lambda v: pd.Series(split_coords(v)))
-        df["LatDecimal"] = df["__LAT_RAW"].apply(dms_to_decimal)
-        df["LonDecimal"] = df["__LON_RAW"].apply(dms_to_decimal)
-        return df
+# Limpar linhas sem coordenadas válidas
+localidades = localidades[pd.notna(localidades["lat"]) & pd.notna(localidades["lon"])].copy()
+ad_df = ad_df[pd.notna(ad_df["lat"]) & pd.notna(ad_df["lon"])].copy()
 
-    # Tenta B) colunas separadas
-    lat_col = find_col(df, lat_candidates)
-    lon_col = find_col(df, lon_candidates)
-    if lat_col and lon_col:
-        df["LatDecimal"] = df[lat_col].apply(dms_to_decimal)
-        df["LonDecimal"] = df[lon_col].apply(dms_to_decimal)
-        return df
-
-    # Se nada encontrado, não cria colunas (iremos avisar no UI)
-    return df
-
-# ---------- Carregar dados ----------
-# Ajusta os nomes dos ficheiros se necessário
-LOCALIDADES_CSV = "Localidades-Nova-versao-230223.csv"
-AD_CSV          = "AD-HEL-ULM.csv"
-
-localidades = pd.read_csv(LOCALIDADES_CSV)
-ad_df        = pd.read_csv(AD_CSV)
-
-# Normaliza cabeçalhos
-localidades.columns = [c.strip().upper() for c in localidades.columns]
-ad_df.columns       = [c.strip().upper() for c in ad_df.columns]
-
-# ---------- Preparar Localidades (VFR points) ----------
-localidades = build_lat_lon_from_any(
-    localidades,
-    single_coord_candidates=["COORDENADAS", "COORD", "COORDS"],
-    lat_candidates=["LATITUDE", "LAT", "LAT_DMS", "LAT DMS"],
-    lon_candidates=["LONGITUDE", "LON", "LON_DMS", "LON DMS"]
-)
-
-# Só depois de tentar criar as colunas é que validamos:
-if "LatDecimal" not in localidades.columns or "LonDecimal" not in localidades.columns:
-    st.error("Não encontrei colunas de coordenadas em **Localidades**. "
-             "Assegura-te que existe 'COORDENADAS' (com 'LAT LON') ou 'LATITUDE' e 'LONGITUDE' em DMS.")
-    st.write("Colunas detetadas em Localidades:", list(localidades.columns))
+if localidades.empty and ad_df.empty:
+    st.error("Sem pontos válidos após parsing das coordenadas. Verifica se as colunas contêm DMS (ex: 392747N / 0081159W) ou decimais.")
     st.stop()
 
-localidades = localidades.dropna(subset=["LatDecimal", "LonDecimal"])
+# ----------------------------
+# Construir o mapa (híbrido)
+# ----------------------------
+# Mapa vazio (tiles=None), vamos adicionar imagem + labels
+m = folium.Map(location=[39.6, -8.1], zoom_start=6, control_scale=True, tiles=None)
 
-# Nome da localidade (tentamos várias possibilidades)
-name_loc_col = find_col(localidades, ["LOCALIDADE", "NAME", "NOME"]) or localidades.columns[0]
-
-# ---------- Preparar AD / Heli / ULM ----------
-# Identifica colunas principais
-ident_col = find_col(ad_df, ["IDENT", "IDENTIFICADOR", "ID", "INDICATIVO"]) or ad_df.columns[0]
-name_col  = find_col(ad_df, ["NOME", "NAME", "DESIGNAÇÃO"]) or ad_df.columns[1]
-tipo_col  = find_col(ad_df, ["TIPO", "TYPE", "CATEGORIA"]) or ad_df.columns[-1]
-
-ad_df = build_lat_lon_from_any(
-    ad_df,
-    single_coord_candidates=["COORDENADAS", "COORD", "COORDS"],
-    lat_candidates=["LATITUDE", "LAT", "LAT_DMS", "LAT DMS"],
-    lon_candidates=["LONGITUDE", "LON", "LON_DMS", "LON DMS"]
-)
-
-if "LatDecimal" not in ad_df.columns or "LonDecimal" not in ad_df.columns:
-    st.error("Não encontrei colunas de coordenadas em **AD/HEL/ULM**. "
-             "Assegura-te que existe 'COORDENADAS' (com 'LAT LON') ou 'LATITUDE' e 'LONGITUDE' em DMS.")
-    st.write("Colunas detetadas em AD/HEL/ULM:", list(ad_df.columns))
-    st.stop()
-
-ad_df = ad_df.dropna(subset=["LatDecimal", "LonDecimal"])
-
-def classify_tipo(t):
-    t = str(t).lower()
-    if "heli" in t:
-        return "Heliporto"
-    if "ulm" in t:
-        return "ULM"
-    return "Aeródromo"
-
-ad_df["TIPO_NORM"] = ad_df[tipo_col].apply(classify_tipo)
-
-# ---------- UI ----------
-st.markdown("""
-<style>
-    .stApp { background-color: #fafbfc; }
-    .folium-map { border-radius: 16px; box-shadow: 0 2px 16px #e2e2e2; }
-    .stTextInput > div > div > input {font-size: 1.05em; text-align: center;}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("<h1 style='text-align:center;'>VFR Points & Aeródromos / Helis / ULM Portugal</h1>", unsafe_allow_html=True)
-
-mid = st.columns([2,5,2])[1]
-with mid:
-    search = st.text_input("Filtrar por nome/código/localidade", "")
-
-# Filtros
-if search:
-    localidades_f = localidades[localidades[name_loc_col].astype(str).str.contains(search, case=False, na=False)]
-    ad_f = ad_df[
-        ad_df[name_col].astype(str).str.contains(search, case=False, na=False) |
-        ad_df[ident_col].astype(str).str.contains(search, case=False, na=False)
-    ]
-else:
-    localidades_f = localidades
-    ad_f = ad_df
-
-st.markdown(
-    f"<div style='text-align:center; color:#666;'>"
-    f"Localidades/Pontos: <b>{len(localidades_f)}</b> &nbsp; | &nbsp; AD/Heli/ULM: <b>{len(ad_f)}</b>"
-    f"</div>", unsafe_allow_html=True
-)
-
-# ---------- Mapa (Esri híbrido) ----------
-CENTER_PT = [39.7, -8.1]
-m = folium.Map(location=CENTER_PT, zoom_start=7, tiles=None, control_scale=True)
+# Esri World Imagery (satélite)
 folium.TileLayer(
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    attr="Esri", name="Esri Satellite", overlay=False, control=False
+    attr="Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+    name="Imagem (Esri)",
+    overlay=False,
+    control=False,
 ).add_to(m)
+
+# Labels (Carto - Positron only labels) por cima da imagem
 folium.TileLayer(
-    tiles="https://services.arcgisonline.com/arcgis/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-    attr="Esri Labels", name="Labels", overlay=True, control=False
+    tiles="https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}.png",
+    attr="© OpenStreetMap contributors © CARTO",
+    name="Labels",
+    overlay=True,
+    control=False,
 ).add_to(m)
 
-# Localidades (círculos amarelos com contorno branco)
-for _, r in localidades_f.iterrows():
+# Camadas de pontos
+fg_local = folium.FeatureGroup(name="Localidades", show=True)
+fg_ad = folium.FeatureGroup(name="AD/HEL/ULM", show=True)
+
+# Localidades — círculos elegantes
+for _, r in localidades.iterrows():
+    name = str(r.get(loc_name_col, "")).strip()
+    popup = folium.Popup(name or "Localidade", max_width=350)
     folium.CircleMarker(
-        location=[r["LatDecimal"], r["LonDecimal"]],
-        radius=5,
+        location=[float(r["lat"]), float(r["lon"])],
+        radius=4,
+        weight=1,
+        color="#2a72de",       # azul
         fill=True,
-        color="#ffffff",
-        fill_color="#FFB300",
+        fill_color="#8ab4ff",  # azul claro
         fill_opacity=0.9,
-        weight=1.5,
-        tooltip=str(r[name_loc_col]),
-        popup=f"<b>{r[name_loc_col]}</b>",
-    ).add_to(m)
+        opacity=1.0,
+        popup=popup,
+    ).add_to(fg_local)
 
-# AD / Helis / ULM
-for _, r in ad_f.iterrows():
-    if r["TIPO_NORM"] == "Aeródromo":
-        icon = folium.Icon(color="blue", icon="plane", prefix="fa")
-    elif r["TIPO_NORM"] == "Heliporto":
-        icon = folium.Icon(color="green", icon="helicopter", prefix="fa")
-    else:  # ULM
-        icon = folium.Icon(color="red", icon="flag", prefix="fa")
-
+# AD/HEL/ULM — ícone de avião
+# cluster para não ficar saturado se forem muitos
+cluster = MarkerCluster(name="AD/HEL/ULM")
+for _, r in ad_df.iterrows():
+    name = str(r.get(ad_name_col, "")).strip()
+    popup = folium.Popup(name or "AD/HEL/ULM", max_width=350)
     folium.Marker(
-        location=[r["LatDecimal"], r["LonDecimal"]],
-        icon=icon,
-        tooltip=f"{r[name_col]} ({r[ident_col]})",
-        popup=f"<b>{r[name_col]}</b><br>{r[ident_col]}<br>{r['TIPO_NORM']}",
-    ).add_to(m)
+        location=[float(r["lat"]), float(r["lon"])],
+        icon=folium.Icon(color="red", icon="plane", prefix="fa"),
+        popup=popup,
+    ).add_to(cluster)
 
-# Centralizar visualmente o mapa
-c = st.columns([0.07, 0.86, 0.07])[1]
-with c:
-    st_folium(m, width=1200, height=680)
+cluster.add_to(fg_ad)
 
-with st.expander("Tabela — Localidades/Pontos VFR"):
-    cols_show = [col for col in [name_loc_col, "COORDENADAS", "LATITUDE", "LONGITUDE", "LatDecimal", "LonDecimal"] if col in localidades_f.columns]
-    st.dataframe(localidades_f[cols_show], use_container_width=True)
+fg_local.add_to(m)
+fg_ad.add_to(m)
 
-with st.expander("Tabela — AD / Heli / ULM"):
-    cols_show2 = [col for col in [ident_col, name_col, tipo_col, "COORDENADAS", "LATITUDE", "LONGITUDE", "LatDecimal", "LonDecimal"] if col in ad_f.columns]
-    st.dataframe(ad_f[cols_show2], use_container_width=True)
+# Ajustar bounds a todos os pontos
+all_lats = list(localidades["lat"].astype(float)) + list(ad_df["lat"].astype(float))
+all_lons = list(localidades["lon"].astype(float)) + list(ad_df["lon"].astype(float))
+if all_lats and all_lons:
+    m.fit_bounds(bounds_from_points(all_lats, all_lons), padding=(30, 30))
 
-
+# Render no centro
+st_folium(m, width=1000, height=680)
 
 
