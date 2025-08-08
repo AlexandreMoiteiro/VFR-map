@@ -4,97 +4,60 @@ import folium
 from streamlit_folium import st_folium
 import re
 
-# --- Função para converter DMS (DDMMSSN/W) para decimal ---
+# Função para converter coordenadas DMS para decimal
 def dms_to_decimal(coord):
-    if pd.isnull(coord): return None
-    coord = str(coord).strip()
-    match = re.match(r"(\d{2,3})(\d{2})(\d{2}(?:\.\d+)?)?([NSEW])", coord)
-    if not match: return None
+    if pd.isnull(coord):
+        return None
+    coord = coord.strip()
+    match = re.match(r'(\d{2,3})(\d{2})(\d{2})([NSEW])', coord)
+    if not match:
+        return None
     d, m, s, hemi = match.groups()
-    d, m = int(d), int(m)
-    s = float(s) if s else 0.0
-    decimal = d + m / 60 + s / 3600
-    if hemi in 'SW': decimal = -decimal
+    decimal = int(d) + int(m)/60 + int(s)/3600
+    if hemi in 'SW':
+        decimal = -decimal
     return decimal
 
-# --- Função para descobrir o header correto ---
-def find_header_row(filepath, search_terms):
-    with open(filepath, encoding='utf-8') as f:
-        for idx, line in enumerate(f):
-            if all(term in line for term in search_terms):
-                return idx
-    return 0  # fallback
+# ---------------- LEITURA DOS CSV ----------------
+localidades = pd.read_csv("Localidades-Nova-versao-230223.csv")
+ad_df = pd.read_csv("AD-HEL-ULM.csv")
 
-# --- Lê e limpa LOCALIDADES ---
-localidades_file = "Localidades-Nova-versao-230223.csv"
-header_row_loc = find_header_row(localidades_file, ["LOCALIDADE", "COORDENADAS"])
-localidades = pd.read_fwf(localidades_file, skip_blank_lines=True, header=header_row_loc)
-localidades.columns = [c.strip() for c in localidades.columns]
-st.write("Colunas lidas em localidades:", localidades.columns.tolist())
-
-# Remove linhas sem localidade ou com "Total de registos"
-localidades = localidades.dropna(how='all')
-if "LOCALIDADE" in localidades.columns:
-    localidades = localidades[~localidades['LOCALIDADE'].astype(str).str.contains('Total de registos|nan', na=False, case=False)]
-    localidades = localidades[~localidades['LOCALIDADE'].astype(str).str.strip().eq('')]
-else:
-    st.error("Coluna 'LOCALIDADE' não encontrada em localidades. Encontradas: " + ", ".join(localidades.columns))
-    st.stop()
-
-# --- Lê e limpa AD/HEL/ULM ---
-ad_file = "AD-HEL-ULM.csv"
-header_row_ad = find_header_row(ad_file, ["Ident", "Latitude", "Longitude"])
-ad_df = pd.read_fwf(ad_file, skip_blank_lines=True, header=header_row_ad)
-ad_df.columns = [c.strip() for c in ad_df.columns]
-st.write("Colunas lidas em AD/HEL/ULM:", ad_df.columns.tolist())
-
-ad_df = ad_df.dropna(how='all')
-if "Ident" in ad_df.columns:
-    ad_df = ad_df[~ad_df['Ident'].astype(str).str.contains('Coord for FPL|Ident', na=False, case=False)]
-    ad_df = ad_df[~ad_df['Ident'].astype(str).str.strip().eq('')]
-else:
-    st.error("Coluna 'Ident' não encontrada em AD/Heli/ULM. Encontradas: " + ", ".join(ad_df.columns))
-    st.stop()
-
-# --- Variáveis para os nomes das colunas ---
-loc_name_col = 'LOCALIDADE'
-loc_coord_col = 'COORDENADAS'
-ad_name_col = [c for c in ad_df.columns if 'Name for FPL' in c][0]
-ad_ident_col = 'Ident'
-ad_lat_col = 'Latitude'
-ad_lon_col = 'Longitude'
-ad_tipo_col = ad_name_col
-
-# --- Processar coordenadas das localidades ---
-def split_coords(x):
-    if pd.isnull(x): return (None, None)
-    x = str(x).replace('\u200b', '').replace('\n', ' ')
-    parts = x.strip().split()
-    if len(parts) >= 2:
-        return parts[0], parts[1]
-    return (None, None)
-localidades[['LAT_RAW', 'LON_RAW']] = localidades[loc_coord_col].apply(lambda x: pd.Series(split_coords(x)))
-localidades['LatDecimal'] = localidades['LAT_RAW'].apply(dms_to_decimal)
-localidades['LonDecimal'] = localidades['LON_RAW'].apply(dms_to_decimal)
+# ---------------- PROCESSAMENTO ----------------
+# Localidades
+localidades.columns = [c.upper() for c in localidades.columns]
+if "COORDENADAS" in localidades.columns:
+    localidades[['LAT_RAW', 'LON_RAW']] = localidades['COORDENADAS'].apply(
+        lambda x: pd.Series(str(x).split()[:2])
+    )
+    localidades['LatDecimal'] = localidades['LAT_RAW'].apply(dms_to_decimal)
+    localidades['LonDecimal'] = localidades['LON_RAW'].apply(dms_to_decimal)
 localidades = localidades.dropna(subset=['LatDecimal', 'LonDecimal'])
 
-# --- Processar coordenadas dos ADs/Helis/ULM ---
-ad_df['LatDecimal'] = ad_df[ad_lat_col].apply(dms_to_decimal)
-ad_df['LonDecimal'] = ad_df[ad_lon_col].apply(dms_to_decimal)
+# Aeródromos
+ad_df.columns = [c.upper() for c in ad_df.columns]
+
+# Tenta identificar colunas
+ident_col = next((c for c in ad_df.columns if "ID" in c or "IDENT" in c), ad_df.columns[0])
+name_col = next((c for c in ad_df.columns if "NOME" in c or "NAME" in c), ad_df.columns[1])
+lat_col = next((c for c in ad_df.columns if "LAT" in c), ad_df.columns[2])
+lon_col = next((c for c in ad_df.columns if "LON" in c), ad_df.columns[3])
+tipo_col = next((c for c in ad_df.columns if "TIPO" in c or "TYPE" in c), ad_df.columns[-1])
+
+ad_df['LatDecimal'] = ad_df[lat_col].apply(dms_to_decimal)
+ad_df['LonDecimal'] = ad_df[lon_col].apply(dms_to_decimal)
 ad_df = ad_df.dropna(subset=['LatDecimal', 'LonDecimal'])
 
-# --- Classifica tipo ---
-def classify_tipo(nome):
-    n = str(nome).lower()
-    if 'heli' in n:
+def classify_tipo(t):
+    t = str(t).lower()
+    if 'heli' in t:
         return 'Heliporto'
-    elif 'ulm' in n:
+    elif 'ulm' in t:
         return 'ULM'
     else:
         return 'Aeródromo'
-ad_df['TIPO_NORM'] = ad_df[ad_tipo_col].apply(classify_tipo)
+ad_df['TIPO_NORM'] = ad_df[tipo_col].apply(classify_tipo)
 
-# --- STREAMLIT APP ---
+# ---------------- STREAMLIT LAYOUT ----------------
 st.set_page_config(page_title="VFR & Aeródromos Portugal", layout="wide")
 
 st.markdown("""
@@ -105,10 +68,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown(
-    "<h1 style='text-align:center;'>VFR Points & Aeródromos / Helis / ULM Portugal</h1>",
-    unsafe_allow_html=True,
-)
+st.markdown("<h1 style='text-align:center;'>VFR Points & Aeródromos / Helis / ULM Portugal</h1>", unsafe_allow_html=True)
 
 cols = st.columns([2, 5, 2])
 with cols[1]:
@@ -116,10 +76,10 @@ with cols[1]:
 
 # Filtro
 if search:
-    localidades_f = localidades[localidades[loc_name_col].str.contains(search, case=False, na=False)]
+    localidades_f = localidades[localidades['LOCALIDADE'].str.contains(search, case=False, na=False)]
     ad_f = ad_df[
-        ad_df[ad_name_col].str.contains(search, case=False, na=False) |
-        ad_df[ad_ident_col].astype(str).str.contains(search, case=False, na=False)
+        ad_df[name_col].str.contains(search, case=False, na=False) |
+        ad_df[ident_col].astype(str).str.contains(search, case=False, na=False)
     ]
 else:
     localidades_f = localidades
@@ -131,14 +91,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- Mapa híbrido ESRI ---
+# ---------------- MAPA ----------------
 CENTER_PT = [39.7, -8.1]
-m = folium.Map(
-    location=CENTER_PT,
-    zoom_start=7,
-    tiles=None,
-    control_scale=True
-)
+m = folium.Map(location=CENTER_PT, zoom_start=7, tiles=None, control_scale=True)
+
+# Híbrido Esri
 folium.TileLayer(
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     attr="Esri",
@@ -154,7 +111,7 @@ folium.TileLayer(
     control=False
 ).add_to(m)
 
-# --- Pontos VFR/localidades: círculo amarelo ---
+# Localidades (círculo amarelo)
 for _, row in localidades_f.iterrows():
     folium.CircleMarker(
         location=[row['LatDecimal'], row['LonDecimal']],
@@ -164,11 +121,11 @@ for _, row in localidades_f.iterrows():
         fill_color="#FFB300",
         fill_opacity=0.88,
         weight=1.5,
-        tooltip=row[loc_name_col],
-        popup=f"<b>{row[loc_name_col]}</b>",
+        tooltip=row['LOCALIDADE'],
+        popup=f"<b>{row['LOCALIDADE']}</b>",
     ).add_to(m)
 
-# --- AD/Helis/ULM: ícone diferente ---
+# Aeródromos / Helis / ULM (ícones diferentes)
 for _, row in ad_f.iterrows():
     if row['TIPO_NORM'] == 'Aeródromo':
         icon = folium.Icon(color='blue', icon='plane', prefix='fa')
@@ -181,19 +138,20 @@ for _, row in ad_f.iterrows():
     folium.Marker(
         location=[row['LatDecimal'], row['LonDecimal']],
         icon=icon,
-        tooltip=f"{row[ad_name_col]} ({row[ad_ident_col]})",
-        popup=f"<b>{row[ad_name_col]}</b><br>{row[ad_ident_col]}<br>{row['TIPO_NORM']}",
+        tooltip=f"{row[name_col]} ({row[ident_col]})",
+        popup=f"<b>{row[name_col]}</b><br>{row[ident_col]}<br>{row['TIPO_NORM']}",
     ).add_to(m)
 
-# --- Centraliza o mapa na página ---
+# Mostrar mapa
 map_cols = st.columns([0.1, 0.8, 0.1])
 with map_cols[1]:
     st_folium(m, width=1100, height=650)
 
+# Expanders para tabelas
 with st.expander("Ver tabela de localidades/pontos VFR"):
-    st.dataframe(localidades_f[[loc_name_col, loc_coord_col, 'LatDecimal', 'LonDecimal']], use_container_width=True)
+    st.dataframe(localidades_f[["LOCALIDADE", "COORDENADAS", "LatDecimal", "LonDecimal"]], use_container_width=True)
 with st.expander("Ver tabela de Aeródromos/Helis/ULM"):
-    st.dataframe(ad_f[[ad_ident_col, ad_name_col, ad_lat_col, ad_lon_col, 'LatDecimal', 'LonDecimal', 'TIPO_NORM']], use_container_width=True)
+    st.dataframe(ad_f[[ident_col, name_col, tipo_col, lat_col, lon_col, 'LatDecimal', 'LonDecimal']], use_container_width=True)
 
 
 
